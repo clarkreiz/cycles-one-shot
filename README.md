@@ -79,6 +79,9 @@ work as on the Model:Samples too, as two switches of model27's builds (below).
 
 ## Status
 
+- **Machine 0.13** (the screen no longer blinks the stock value for a moment at the first turn of
+  Start or Length): host-tested, and tested in model27's build in the digiemu emulator and on a
+  Model:Cycles (2026-10-31).
 - **Machine 0.12** (with a trig held, turning Start or Length shows the whole view for that trig: its
   locks on the waveform, a sample lock's sample and name; NoteVelocityView's draw goes through
   SAMPLE's view for that): host-tested, and tested in the digiemu emulator and on a Model:Cycles
@@ -140,7 +143,7 @@ work as on the Model:Samples too, as two switches of model27's builds (below).
    python3 machine/build.py --stock model-cycles_OS1.13.syx --modded-cycles path/to/Modded-Cycles
    ```
 
-   This writes `build/model-cycles_OS1.13-sampler-v0.12.syx` and `build/sampler-tweak.json`, the
+   This writes `build/model-cycles_OS1.13-sampler-v0.13.syx` and `build/sampler-tweak.json`, the
    same machine as a tweak file Modded-Cycles' own `tools/build.py` accepts, and checks every change
    against the stock bytes.
 2. **Install it** over USB the way you install an official OS update. To go back, first set every

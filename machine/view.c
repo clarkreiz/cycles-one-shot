@@ -421,11 +421,11 @@ static int held_shown;
 void smp_knob_draw(void *view, smp_bitmap *b)
 {
     const char *s = sample_sound();
-    int32_t p = KNOB_PARAM(view);
+    int32_t p = SHOWN_PARAM();              /* not the knob view's +0x230: it lags behind (os.h) */
     smp_held h;
 
     held_shown = 0;
-    if (!s || !VALUE_SHOWN() || (p != DESC_START && p != DESC_LENGTH)) {
+    if (!s || (p != DESC_START && p != DESC_LENGTH)) {
         KNOB_DRAW(view, b);
         return;
     }

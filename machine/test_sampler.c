@@ -40,7 +40,8 @@ _Alignas(8) char host_pool[1 << 20];
 unsigned long host_pool_size = sizeof host_pool;
 uint32_t host_fs_mounted = 1;
 void *host_fs_holder, *host_task = (void *)0x1000;
-int host_value_shown, host_trig_held, host_track, host_pattern, host_level, host_main_draws, host_knob_draws;
+int32_t host_shown_param;
+int host_trig_held, host_track, host_pattern, host_level, host_main_draws, host_knob_draws;
 const void *host_font;
 const char host_font_small[] = "small", host_font_medium[] = "medium";
 _Alignas(8) char host_ui_objects[76 * 100];
@@ -337,7 +338,7 @@ static void reset_all(void)
     host_fs_holder = 0;
     memset(work_kit, 0, sizeof work_kit);
     host_play_kit = 0;
-    host_value_shown = 0;
+    host_shown_param = 0;
     host_trig_held = 0;
     host_held_steps = 0;
     host_step_count = 16;
@@ -1001,37 +1002,48 @@ static void test_view(void)
 
     /* turning Start or Length shows the view, other knobs their value */
     memset(view, 0, sizeof view);
-    host_value_shown = 1;
     for (p = DESC_START; p <= DESC_LENGTH; p++) {
-        memcpy(view + 0x230, &p, 4);
+        host_shown_param = p;
         smp_knob_draw(view, &screen);
     }
     CHECK(host_knob_draws == 0, "Start and Length move the markers");
-    p = 42;
-    memcpy(view + 0x230, &p, 4);
+    host_shown_param = 42;
     smp_knob_draw(view, &screen);
     CHECK(host_knob_draws == 1, "another knob shows its value");
-    p = DESC_START;
+
+    /* The knob handler (0x4001f4f0) sets the shown parameter, opens the value window, and only then copies the
+       parameter into the knob view's +0x230: a redraw in between finds the knob turned before there. The draw
+       follows the shown parameter, so the first frame of a turn is already the right screen. */
+    p = 42;
     memcpy(view + 0x230, &p, 4);
+    host_shown_param = DESC_START;
+    smp_knob_draw(view, &screen);
+    CHECK(host_knob_draws == 1, "first frame of a Start turn, another knob still at +0x230: SAMPLE's view");
+    p = DESC_LENGTH;
+    memcpy(view + 0x230, &p, 4);
+    host_shown_param = 42;
+    smp_knob_draw(view, &screen);
+    CHECK(host_knob_draws == 2, "first frame of another knob's turn, Length still at +0x230: the stock knob view");
+    memset(view, 0, sizeof view);
+
+    host_shown_param = DESC_START;
     host_trig_held = 1;
     smp_knob_draw(view, &screen);
     host_trig_held = 0;
-    CHECK(host_knob_draws == 1, "with a trig held that has no locks, Start shows the track's view (test_view_held)");
+    CHECK(host_knob_draws == 2, "with a trig held that has no locks, Start shows the track's view (test_view_held)");
     smp_main_draw(0, &screen);
     CHECK(host_main_draws == 1, "while a value shows, the main screen is the stock one");
 
     /* tracks on other machines, and no track */
-    host_value_shown = 0;
+    host_shown_param = 0;
     host_track = 3;
     smp_main_draw(0, &screen);
-    host_value_shown = 1;
-    p = DESC_START;
-    memcpy(view + 0x230, &p, 4);
+    host_shown_param = DESC_START;
     smp_knob_draw(view, &screen);
     host_track = -1;
-    host_value_shown = 0;
+    host_shown_param = 0;
     smp_main_draw(0, &screen);
-    CHECK(host_main_draws == 3 && host_knob_draws == 2, "other machines keep the stock views");
+    CHECK(host_main_draws == 3 && host_knob_draws == 3, "other machines keep the stock views");
 }
 
 /* The start's solid line at column s and the end's dotted one at column e of the waveform. */
@@ -1054,8 +1066,7 @@ static void lock_step(int n, int start, int length, int pool)
 
 static void turn_knob(char *view, int32_t p)
 {
-    memcpy(view + 0x230, &p, 4);
-    host_value_shown = 1;
+    host_shown_param = p;
     smp_knob_draw(view, &screen);
     smp_note_draw(0, &screen);
 }
@@ -1091,7 +1102,7 @@ static void test_view_held(void)
 
     /* step 4: Start 30, Length 45 locked: 26 to 65 of 105 columns, as in test_view */
     lock_step(4, 30, 45, -1);
-    host_value_shown = 0;
+    host_shown_param = 0;
     smp_main_draw(0, &screen);
     smp_note_draw(0, &screen);
     CHECK(host_main_draws == 0 && markers(0, 104) && host_note_draws == 1,
@@ -1103,7 +1114,7 @@ static void test_view_held(void)
     CHECK(host_knob_draws == 0 && markers(26, 65) && host_note_draws == 1, "turning Length: the same");
     turn_knob(view, 42);
     CHECK(host_knob_draws == 1 && host_note_draws == 2, "another knob: the stock knob view, NoteVelocityView");
-    host_value_shown = 0;
+    host_shown_param = 0;
     smp_knob_draw(view, &screen);
     smp_note_draw(0, &screen);
     CHECK(host_knob_draws == 2 && host_note_draws == 3, "the value gone: NoteVelocityView back");

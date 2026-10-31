@@ -318,6 +318,13 @@ runs from another task (a screen copy), so the tick takes its own `tas` lock.
 - The knob view keeps the shown parameter at `+0x230`, the global descriptor number, which its knob
   handler (`0x4001f4f0`, store at `0x4001f73a`) takes from the knob rows (`0x4001e814`). Its
   timeout counter `+0x238` is counted down in another method (`0x4001efaa`), not in `draw`.
+- `+0x230` lags behind. The handler first sets UIStates+88 to the parameter (`0x4006b71c`, at
+  `0x4001f6fa`; `0x4006b712` reads it back), then, when the value window is closed, opens it
+  (`0x40077946`, under the screen's lock: the screen is drawn by another task), and only then copies
+  the parameter into `+0x230`. A redraw in between finds the knob turned before at `+0x230`. The
+  stock draw does not show it (every parameter looks alike there); a draw that picks a screen by
+  the parameter must read UIStates+88. model27's `tools/emu/probe_knob_order.py` runs the handler
+  on the official OS and shows the order.
 - While a trig is held, the knob view shows the held steps' locked values: per step the lock
   (vtable +96), a sound lock (vtable +108), otherwise the base value (vtable +80). It goes through
   the held steps in order (`0x4006be48`: bit n of the 64-bit word `ui+348` (high) : `ui+352` (low),
@@ -353,7 +360,8 @@ runs from another task (a screen copy), so the tick takes its own `tas` lock.
 **SAMPLE's view** (`machine/view.c`) takes over the three draw entries. On a SAMPLE track it draws
 the main screen itself, and the knob view's screen while Start or Length is turned; everything else
 goes to the stock method. It reads the sound's live COLOR and SHAPE, so the markers move while the
-knob turns.
+knob turns. It knows which knob turns from UIStates+88, not from `+0x230` (above): up to 0.12 the
+first frame of a Start or Length turn could be the stock value screen, a blink on the screen.
 
 With a trig held, the main screen stays as without one, under NoteVelocityView's left half. While
 Start or Length turns then, the knob view's screen shows the whole view for what the held trig
@@ -760,6 +768,16 @@ pixels per OS pixel) and compare against the PBM pictures above.
   from column 23; also under ASan and UBSan; `make test`; `make filter-test`), the build against
   Modded-Cycles `95b63b7` with elektron-firmware-tool's check, then digiemu and a Model:Cycles
   (2026-10-25), with the same image byte for byte.
+- **Machine 0.13** (no blink at the first turn of Start or Length, 2026-10-31), after a report that
+  the screen blinked for a moment at the first turn of COLOR or SHAPE on a SAMPLE track, on a
+  Model:Cycles and in digiemu: host tests (`make machine-test`, with and without the switches: a draw
+  with the knob turned before still at `+0x230` shows SAMPLE's view for Start and the stock knob view
+  for another knob; with the old read of `+0x230` both cases fail; also under ASan and UBSan, which
+  reports only what it reported before), model27's probe of the OS's handler (section 9), `make
+  target`, the build against Modded-Cycles `95b63b7` with elektron-firmware-tool's check, then
+  model27's build (`compose.py --machines sampler`) in digiemu and on a Model:Cycles (2026-10-31): no
+  blink at the first turn of Start or Length, nor at the first turn of another knob after them; the
+  held trig's view, Loop and Reverse as before.
 - **Machine 0.11** (Loop and Reverse, the fade-in after a cut, 2026-10-26): host tests (`make test`:
   forward and reverse against the 64-bit reference, loops of 1 to 3,000 frames at random ratios bit
   for bit, the loop switched on and off at random with the end where section 10 says, single cycles

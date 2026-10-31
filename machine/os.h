@@ -79,12 +79,16 @@ static inline char *os_sound(int t)
 /* Two views take turns on the main screen; each is drawn through entry +16 of its vtable, the only
    reference to its draw method. MainScreenView (vtable 0x400ffe20, draw 0x4001b22a) shows the track
    with its level and pan while no value is shown. The knob view (vtable 0x4010052c, draw
-   0x4001e40a) shows a turned parameter's name and value while one is shown (UIStates+88,
-   0x4006b704); its knob handler 0x4001f4f0 keeps that parameter's index at +0x230 (0x4001f73a). */
+   0x4001e40a) shows a turned parameter's name and value while one is shown: UIStates+88 holds that
+   parameter's index, 0 for none (0x4006b704 tests it, 0x4006b712 reads it). The knob handler
+   0x4001f4f0 stores the index there first (0x4006b71c, at 0x4001f6fa), opens the value window when
+   it is closed (0x40077946, which wakes the screen's task), and only then copies the index into the
+   knob view's +0x230 (0x4001f73a). A redraw in between finds the knob turned before at +0x230, so
+   the draws read UIStates+88. */
 #define MAIN_DRAW(v, b)     ((void (*)(void *, void *))0x4001b22a)(v, b)
 #define KNOB_DRAW(v, b)     ((void (*)(void *, void *))0x4001e40a)(v, b)
-#define KNOB_PARAM(v)       (*(const int32_t *)((const char *)(v) + 0x230))
-#define VALUE_SHOWN()       (((char (*)(void *))0x4006b704)(((void *(*)(void))0x400cf9a8)()) != 0)
+#define SHOWN_PARAM()       (((int32_t (*)(void *))0x4006b712)(((void *(*)(void))0x400cf9a8)()))
+#define VALUE_SHOWN()       (SHOWN_PARAM() != 0)
 /* A trig is held, so a turned knob edits its locks (UIStates+356, 0x4006b736); the knob view then
    shows the held trigs' locked values (0x4001e5dc). */
 #define TRIG_HELD()         (((char (*)(void *))0x4006b736)(((void *(*)(void))0x400cf9a8)()) != 0)
