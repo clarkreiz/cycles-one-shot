@@ -515,6 +515,296 @@ static void test_loop_no_click(void)
           (long long)bound);
 }
 
+/* --- the window moving while a voice plays ---------------------------------------------------- */
+
+/* Playing once, both directions, one ratio per run: the length changed at random blocks (shorter,
+   longer, behind the playhead, past the sample's edge). After each change the end must follow
+   smp_core.h: the length asked for, but no further than the sample's edge, never with less than the
+   whole fade-out ahead of the playhead (and then no more than that, give or take the core's rounding
+   of 3 frames), and unchanged once the fade-out has begun. Every frame must equal the reference with
+   that end, which reads the sample past the window's first end too. */
+static void test_length(void)
+{
+    enum { LEN = 9000 };
+    static int16_t pcm[LEN], y[LEN], scratch[SMP_SCRATCH];
+    int32_t out[SMP_BLOCK2X];
+    int run, k, shorter = 0, longer = 0, held = 0, frozen = 0;
+
+    for (k = 0; k < LEN; k++)
+        pcm[k] = (int16_t)rnd();
+    for (run = 0; run < 600; run++) {
+        int32_t start, end, edge;
+        int reverse = run & 1, blocks, bad = 0, fade_in;
+        int64_t n = 0, stop;
+        uint32_t ratio = SMP_MIN_RATIO_Q16 + rnd() % (SMP_MAX_RATIO_Q16 - SMP_MIN_RATIO_Q16 + 1);
+        uint64_t P = 0, step, need;
+        smp_voice v;
+
+        if (run % 5 == 0)
+            ratio = run % 10 ? SMP_MAX_RATIO_Q16 : 1u << 16;
+        some_window(run, LEN, &start, &end);
+        fade_in = reverse ? end < LEN : start > 0;
+        edge = reverse ? end : LEN - start;     /* frames from the first played to the sample's edge */
+        play_order(y, pcm, reverse ? 0 : start, reverse ? end : LEN, reverse);
+        smp_trigger(&v, pcm, LEN, start, end, reverse ? SMP_REVERSE : 0);
+        smp_set_ratio(&v, ratio);
+        step = ((uint64_t)v.step_int << 32) | v.step_frac;
+        need = SMP_FADE * step;
+        stop = end - start;
+        for (blocks = 0; blocks < 6000 && v.active && !bad; blocks++) {
+            if (rnd() % 3 == 0) {
+                int64_t was = stop, left = frames_left64(stop, P, step), ahead;
+                int32_t f = rnd() % 4 == 0 ? (int32_t)(P >> 32) + (int32_t)(rnd() % 200) - 100
+                                           : (int32_t)(rnd() % (uint32_t)(edge + 300));
+                int acted;
+
+                smp_set_length(&v, f);
+                stop = v.stop;
+                ahead = (int64_t)(((uint64_t)stop << 32) - P);
+                acted = stop <= edge && stop >= (f < edge ? f : edge) && (ahead >= (int64_t)need || stop == edge)
+                        && (stop <= f || stop == edge || ahead < (int64_t)(need + (4ull << 32)));
+                if (left <= SMP_FADE - 2)
+                    CHECK(stop == was, "length run %d block %d: moved %lld frames before the end", run, blocks,
+                          (long long)left);
+                else
+                    CHECK(acted || (left < SMP_FADE + 1 && stop == was),
+                          "length run %d block %d: asked %d, end %lld (was %lld, %.2f frames ahead, the fade %.2f, "
+                          "edge %d)", run, blocks, (int)f, (long long)stop, (long long)was, ahead / 4294967296.0,
+                          need / 4294967296.0, (int)edge);
+                CHECK(reverse ? v.end == end && v.start == end - stop : v.start == start && v.end == start + stop,
+                      "length run %d block %d: window %d..%d, end %lld", run, blocks, (int)v.start, (int)v.end,
+                      (long long)stop);
+                shorter += stop < was;
+                longer += stop > was;
+                held += stop > f && stop != edge;
+                frozen += left <= SMP_FADE - 2;
+            }
+            if (smp_render(&v, out, scratch) != 1) {
+                CHECK(0, "length run %d block %d: an active voice rendered nothing", run, blocks);
+                break;
+            }
+            for (k = 0; k < SMP_BLOCK2X; k++, n++, P += step) {
+                int64_t raw = ref_loop(y, edge, stop, P), in = fade_in ? n : SMP_FADE, rem = frames_left64(stop, P, step);
+                int64_t want = faded(raw, in, rem), alt = faded(raw, in, rem + 1);
+
+                if (out[k] != want && out[k] != alt) {
+                    CHECK(0, "length run %d (%s) block %d frame %d: %ld, want %lld", run,
+                          reverse ? "reverse" : "forward", blocks, k, (long)out[k], (long long)want);
+                    bad = 1;
+                    break;
+                }
+            }
+            CHECK(bad || v.active == ((int64_t)(P >> 32) - (SMP_TAPS / 2 - 1) < stop),
+                  "length run %d block %d: active %d at %lld, end %lld", run, blocks, (int)v.active,
+                  (long long)(P >> 32), (long long)stop);
+        }
+        CHECK(!v.active, "length run %d: still active", run);
+    }
+    CHECK(shorter > 200 && longer > 200 && held > 100 && frozen > 100,
+          "length: only %d shorter, %d longer, %d held off by the fade, %d in the fade", shorter, longer, held, frozen);
+}
+
+/* The frame the taps at pass position P read in the window [s, e) played forward or reverse. */
+static int64_t ref_pass(const int16_t *pcm, int32_t s, int32_t e, int reverse, uint64_t P)
+{
+    int64_t i = (int64_t)(P >> 32), acc = 0;
+    const int16_t *c = smp_coeffs[(P >> 24) & 0xff];
+    int t;
+
+    for (t = 0; t < SMP_TAPS; t++) {
+        int64_t j = i - (SMP_TAPS / 2 - 1) + t;
+
+        acc += (int64_t)c[t] * pcm[reverse ? e - 1 - j : s + j];
+    }
+    return acc;
+}
+
+/* A loop whose window moves at random blocks, both directions, one ratio per run: the far side alone
+   (ahead of the playhead or behind it), the first side alone, both, or an empty window. A model of
+   the passes kept here follows smp_core.h: the far side at once while it stays ahead, the first side
+   from the next seam, round at once into the new window when the far side is behind. After each
+   block the voice must stand where the model does, and every frame whose taps lie inside one pass
+   (this one, or the next within the block) must be that pass's frames. */
+static void test_window(void)
+{
+    enum { LEN = 9000 };
+    static int16_t pcm[LEN], scratch[SMP_SCRATCH];
+    int32_t out[SMP_BLOCK2X];
+    int run, k, checked = 0, nexts = 0, rounds = 0, fars = 0;
+
+    for (k = 0; k < LEN; k++)
+        pcm[k] = (int16_t)rnd();
+    for (run = 0; run < 600; run++) {
+        int32_t s, e, next = -1;                /* the model: this pass's window, where the next begins */
+        int reverse = run & 1, blocks, bad = 0, fade_in;
+        int64_t n = 0;
+        uint32_t ratio = SMP_MIN_RATIO_Q16 + rnd() % (SMP_MAX_RATIO_Q16 - SMP_MIN_RATIO_Q16 + 1);
+        uint64_t P = 0, step;                   /* the playhead in this pass */
+        smp_voice v;
+
+        if (run % 5 == 0)
+            ratio = run % 10 ? SMP_MAX_RATIO_Q16 : 1u << 16;
+        some_window(run, LEN, &s, &e);
+        fade_in = reverse ? e < LEN : s > 0;
+        smp_trigger(&v, pcm, LEN, s, e, SMP_LOOP | (reverse ? SMP_REVERSE : 0));
+        smp_set_ratio(&v, ratio);
+        step = ((uint64_t)v.step_int << 32) | v.step_frac;
+        for (blocks = 0; blocks < 300 && !bad; blocks++) {
+            int32_t len, s2, e2, len2;
+
+            if (blocks && rnd() % 3 == 0) {
+                int32_t ns, ne, pos = (int32_t)(P >> 32), kind = (int32_t)(rnd() % 9);
+
+                some_window((int)rnd(), LEN, &ns, &ne);
+                if (kind < 2) {                 /* the far side alone, ahead of the playhead or anywhere */
+                    if (reverse)
+                        ne = e, ns = kind ? (int32_t)(rnd() % (uint32_t)e) : e - 1 - pos - (int32_t)(rnd() % 64);
+                    else
+                        ns = s, ne = kind ? s + 1 + (int32_t)(rnd() % (uint32_t)(LEN - s)) : s + pos + 1 + (int32_t)(rnd() % 64);
+                } else if (kind < 4) {          /* the far side alone, just behind the playhead */
+                    if (reverse)
+                        ne = e, ns = e - 1 - (int32_t)(rnd() % (uint32_t)(pos + 1));
+                    else
+                        ns = s, ne = s + 1 + (int32_t)(rnd() % (uint32_t)(pos + 1));
+                } else if (kind < 6) {          /* the first side alone */
+                    if (reverse)
+                        ns = s, ne = s + 1 + (int32_t)(rnd() % (uint32_t)(LEN - s));
+                    else
+                        ne = e, ns = (int32_t)(rnd() % (uint32_t)e);
+                } else if (kind == 8) {
+                    ne = ns;                    /* empty: ignored */
+                }
+                if (ns < 0)
+                    ns = 0;
+                if (ne > LEN)
+                    ne = LEN;
+                smp_set_window(&v, ns, ne);
+                if (ns < ne) {
+                    int32_t here = reverse ? e - ns : ne - s, first = reverse ? ne : ns;
+
+                    if (pos < here) {
+                        if (reverse)
+                            s = ns;
+                        else
+                            e = ne;
+                        next = first == (reverse ? e : s) ? -1 : first;
+                        fars++;
+                    } else {
+                        P = ((uint64_t)((pos - here) % (ne - ns)) << 32) | (uint32_t)P;
+                        s = ns;
+                        e = ne;
+                        next = -1;
+                        rounds++;
+                    }
+                }
+            }
+            len = e - s;
+            s2 = next >= 0 && !reverse ? next : s;  /* the next pass */
+            e2 = next >= 0 && reverse ? next : e;
+            len2 = e2 - s2;
+            if (smp_render(&v, out, scratch) != 1 || !v.active) {
+                CHECK(0, "window run %d block %d: the voice stopped", run, blocks);
+                break;
+            }
+            for (k = 0; k < SMP_BLOCK2X; k++, n++, P += step) {
+                int64_t i = (int64_t)(P >> 32), want;
+
+                if (i - 2 >= 0 && i + 3 < len)
+                    want = ref_pass(pcm, s, e, reverse, P);
+                else if (i - len - 2 >= 0 && i - len + 3 < len2)
+                    want = ref_pass(pcm, s2, e2, reverse, P - ((uint64_t)len << 32));
+                else
+                    continue;
+                want = faded(want, fade_in ? n : SMP_FADE, SMP_FADE);
+                checked++;
+                if (out[k] != want) {
+                    CHECK(0, "window run %d (%s) block %d frame %d: %ld, want %lld", run,
+                          reverse ? "reverse" : "forward", blocks, k, (long)out[k], (long long)want);
+                    bad = 1;
+                    break;
+                }
+            }
+            if ((int64_t)(P >> 32) >= len) {    /* round the window at the block's end, as render does */
+                P -= (uint64_t)len << 32;
+                if (next >= 0) {
+                    s = s2;
+                    e = e2;
+                    next = -1;
+                    nexts++;
+                }
+                P = ((uint64_t)((P >> 32) % (uint64_t)(e - s)) << 32) | (uint32_t)P;
+            }
+            CHECK(bad || (v.pos == (int32_t)(P >> 32) && v.frac == (uint32_t)P && v.start == s && v.end == e
+                          && v.next == next),
+                  "window run %d block %d: voice at %d.%08x in %d..%d next %d, model %d.%08x in %d..%d next %d", run,
+                  blocks, (int)v.pos, v.frac, (int)v.start, (int)v.end, (int)v.next, (int)(P >> 32), (uint32_t)P,
+                  (int)s, (int)e, (int)next);
+            if (v.pos != (int32_t)(P >> 32) || v.start != s || v.end != e)
+                bad = 1;
+        }
+    }
+    CHECK(checked > 1000000 && nexts > 1000 && rounds > 1000 && fars > 3000,
+          "window: only %d frames checked, %d next passes, %d rounds at once, %d far sides", checked, nexts, rounds,
+          fars);
+}
+
+/* A DC sample, both directions, the loop switched on and off at random while the length (playing
+   once) and the window (looping) move at random, behind the playhead too: wherever the window starts
+   inside the sample, the level never steps by more than the fades' S curve does from one frame to the
+   next, and the voice ends in silence. */
+static void test_moves_no_click(void)
+{
+    enum { LEN = 6000, LEVEL = 20000 };
+    static int16_t pcm[LEN], scratch[SMP_SCRATCH];
+    int32_t out[SMP_BLOCK2X];
+    int64_t bound, worst = 0;
+    uint32_t steepest = 0;
+    int run, k, n;
+
+    for (k = 0; k < LEN; k++)
+        pcm[k] = LEVEL;
+    for (n = 1; n <= SMP_FADE; n++)
+        if (gain(n) - gain(n - 1) > steepest)
+            steepest = gain(n) - gain(n - 1);
+    bound = (int64_t)LEVEL * (2 * steepest + 2);        /* both fades at once in a short window */
+    for (run = 0; run < 400; run++) {
+        int32_t start, end, last = 0;
+        int reverse = run & 1, loop = (run >> 1) & 1, blocks;
+        uint32_t ratio = SMP_MIN_RATIO_Q16 + rnd() % (SMP_MAX_RATIO_Q16 - SMP_MIN_RATIO_Q16 + 1);
+        smp_voice v;
+
+        some_window(run, LEN - 2, &start, &end);
+        start += 1;                             /* inside the sample on both sides: the trig fades in */
+        end += 1;
+        smp_trigger(&v, pcm, LEN, start, end, (loop ? SMP_LOOP : 0) | (reverse ? SMP_REVERSE : 0));
+        smp_set_ratio(&v, ratio);
+        for (blocks = 0; blocks < 20000 && smp_render(&v, out, scratch); blocks++) {
+            for (k = 0; k < SMP_BLOCK2X; k++) {
+                int64_t d = (int64_t)out[k] - last;
+
+                if (d < 0)
+                    d = -d;
+                if (d > worst)
+                    worst = d;
+                last = out[k];
+            }
+            if (rnd() % 5 == 0)
+                loop = !loop;
+            smp_set_loop(&v, loop && blocks < 3000);
+            if (blocks < 3000 && rnd() % 3 == 0) {
+                int32_t a, b;
+
+                some_window((int)rnd(), LEN - 2, &a, &b);
+                smp_set_window(&v, a + 1, b + 1);
+                smp_set_length(&v, (int32_t)(rnd() % LEN));
+            }
+        }
+        CHECK(!v.active && last == 0, "moves run %d: active %d, ended at %ld", run, (int)v.active, (long)last);
+    }
+    CHECK(worst <= bound, "moves: the level stepped by %lld, the fades by %lld at most", (long long)worst,
+          (long long)bound);
+}
+
 /* A window of one frame loops as DC, either way round, and never ends. */
 static void test_loop_tiny(void)
 {
@@ -656,6 +946,9 @@ int main(void)
     test_single_cycle();
     test_loop_no_click();
     test_loop_tiny();
+    test_length();
+    test_window();
+    test_moves_no_click();
     if (failures) {
         printf("%d check(s) failed\n", failures);
         return 1;

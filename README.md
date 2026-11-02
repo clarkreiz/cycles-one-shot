@@ -25,6 +25,11 @@ work as on the Model:Samples too, as two switches of model27's builds (below).
   as mono.
 - **Start and Length as on the Model:Samples.** Both run from 0 to 120, so moving Start keeps the
   length and 120 splits evenly into slices.
+- **Start and Length act on the note that plays.** Turn Length, or let an LFO move it, and a note
+  that plays once ends where Length now puts it, with its 4 ms fade-out whole even when the end moves
+  behind the playhead. Its start stays where the trig put it, so an LFO on Start still gives each
+  trig a start of its own. A loop takes the window as the Model:Samples does: its end at once, its
+  start from the next time round. Move Start on a loop and the loop wanders with it.
 - **No clicks at the edges.** 4 ms fades at the end of what a trig plays, and at its start when
   Start lies inside the sample. A sample played from its first frame keeps its attack. A trig that
   cuts a note still sounding brings the new one in over 0.67 ms, as the Model:Samples does.
@@ -69,8 +74,8 @@ work as on the Model:Samples too, as two switches of model27's builds (below).
 | Knob | SAMPLE |
 |---|---|
 | PITCH (in tenths; FUNC + PITCH in semitones), the trig's note | pitch, as on every machine. PITCH 0 at note 60 plays the sample as recorded |
-| COLOR | Start, 0–120 |
-| SHAPE | Length, 0–120; it ends at Start + Length, at most at the sample's end. 120 (the default) plays to the end |
+| COLOR | Start, 0–120; on a note that plays, a loop starts there from its next time round |
+| SHAPE | Length, 0–120; it ends at Start + Length, at most at the sample's end. 120 (the default) plays to the end. On a note that plays, the end moves at once |
 | SWEEP | Cutoff, shown as −64 … 63 like the Model:Samples: below 0 a lowpass that closes towards −64 (5 Hz), above 0 a highpass that closes towards 63 (19 kHz); 0 = off |
 | CONTOUR | Reso, resonance 0–127 |
 | DECAY, GATE, PUNCH | the stock amp chain, set up as on TONE. DECAY starts at 127, so a sample plays out; GATE is heard with a lower DECAY |
@@ -79,6 +84,10 @@ work as on the Model:Samples too, as two switches of model27's builds (below).
 
 ## Status
 
+- **Machine 0.13** (Start and Length act on the note that plays: once, Length moves its end; a loop
+  takes its end at once and its start from the next time round): host-tested, and tested in a build
+  of model27 with the switches, in the digiemu emulator and on a Model:Cycles (2026-11-02). One-Shot's
+  own image, without the switches, is host-tested; not yet on a device on its own.
 - **Machine 0.12** (with a trig held, turning Start or Length shows the whole view for that trig: its
   locks on the waveform, a sample lock's sample and name; NoteVelocityView's draw goes through
   SAMPLE's view for that): host-tested, and tested in the digiemu emulator and on a Model:Cycles
@@ -140,7 +149,7 @@ work as on the Model:Samples too, as two switches of model27's builds (below).
    python3 machine/build.py --stock model-cycles_OS1.13.syx --modded-cycles path/to/Modded-Cycles
    ```
 
-   This writes `build/model-cycles_OS1.13-sampler-v0.12.syx` and `build/sampler-tweak.json`, the
+   This writes `build/model-cycles_OS1.13-sampler-v0.13.syx` and `build/sampler-tweak.json`, the
    same machine as a tweak file Modded-Cycles' own `tools/build.py` accepts, and checks every change
    against the stock bytes.
 2. **Install it** over USB the way you install an official OS update. To go back, first set every

@@ -191,7 +191,8 @@ of a sample (section 10).
 reads the sample's id from the note's parameter copy, finds the loaded sample (or stays silent if
 it is not loaded) and starts the core on the frames Start and Length select. Every block it turns
 the note into a ratio, linear within a semitone, and multiplies it by the sample's rate against
-48 kHz, so a sample keeps its pitch at any rate, and hands SWEEP and CONTOUR to the filter.
+48 kHz, so a sample keeps its pitch at any rate, and hands SWEEP and CONTOUR to the filter. Between
+trigs it also hands COLOR and SHAPE to the core when either has changed (section 11).
 `render` runs the core (64 frames at 96 kHz), the stock decimator, the amp chain and then the
 filter (section 16), the last stage of a track as on the Model:Samples. It skips all of that while
 no trig is pending and the sample has ended or the envelope is below −102 dB, and the voice then
@@ -484,6 +485,19 @@ ahead at its pitch, so the fade-out is whole even when one pass is shorter (a si
 about 2 ms at 480 Hz). The direction is set at the trig. Reverse fades in when the window ends
 before the sample's last frame, the mirror of a start inside the sample.
 
+**A window that moves.** While a voice plays, its window may change (section 11), and the playhead
+stays on its frame: it counts from the first frame played, so moving the frame a pass begins with would
+move the playhead along. A voice that plays once and has never gone round keeps the frame it began with
+and takes a new length (`smp_set_length`): its stop moves, but never to less than its whole fade-out
+ahead of the playhead (`fade_frames`, the frames `last_stop` keeps too), no further than the sample's
+own edge, and not at all once the fade-out has begun, so the fade-out is never cut short and never
+jumps back up. A loop takes a whole window (`smp_set_window`): its far side at once while that stays
+ahead of the playhead, the other side as `next`, where the next pass begins. `fetch` copies the frames
+past a seam ahead from that next window, and the round at the end of a block moves into it, so the
+taps read across the seam into the pass that will play. A far side moved behind the playhead goes round
+at once, its overshoot carried into the new window, at a hard seam like any other. Switched off, a loop
+keeps the window it has for the passes left (`last_stop` counts in it).
+
 **Fades.** When the window starts past the sample's first frame, the core fades in over 384 frames
 at 96 kHz (4 ms); every window fades out over the 384 frames before the playhead reaches its end.
 Both follow the S curve 3x² − 2x³, computed in Q15 integers (at most about 4/32768 off). They count
@@ -494,7 +508,9 @@ practice: Ableton Live fades clip edges by up to 4 ms; FL Studio's sampler fades
 default and keeps drum attacks in its transient mode.
 
 **Cost.** With gcc 16 at `-O2` the inner loop takes 31 instructions per frame, about 2,200 per track
-and block; the decimator adds about 520. A TONE voice takes 5,291 (measured by Modded-Cycles). An
+and block; the decimator adds about 520. The moving window (0.13) adds about 50 instructions a block
+while the knobs rest and 100–160 while one moves, three or six of them divisions (counted in a
+ColdFire interpreter against 0.12's 2,770 for core and update together). A TONE voice takes 5,291 (measured by Modded-Cycles). An
 EMAC loop like the Model:Samples' (16 instructions per frame) would halve the core's share.
 
 ### The table
@@ -558,6 +574,26 @@ window at `0x400a62dc` of its MAIN OS: start at Start / 120 of the sample, end a
 so moving Start keeps the length, and 120 splits evenly into slices. The view draws its columns
 from the same rule. Sounds saved with 0.2 counted in 128ths of the sample and Length of the rest;
 their values now count as above, values past 120 as 120.
+
+**On the note that plays** (0.13). The trig sets the window as above; after that `update` hands
+COLOR and SHAPE to the core in every block in which either word, or whether the voice loops, has
+changed since the last, but not in the blocks around a trig, which start the voice anew. The words
+are the OS's smoothed ones: a turned knob glides there, each block 3 % of the way to its target
+(`0x40058474`: 0.97 of the last value and 0.03 of the target, about 22 ms to 1/e and 100 ms to 99 %),
+and an LFO's value arrives the same way. A p-lock does not glide: the note message writes the locked
+word into both the target and the smoothed value (`0x400583da`), and the next note of the same sound
+puts the sound's own value back the same way (`0x40058308`), so at a trig the window is the locked one
+already, as before.
+- *Playing once*, the voice keeps the Start of its trig and plays what Start of the trig + Length now
+  gives (at most to the sample's end): the end moves at once, Start alone moves nothing. So an LFO on
+  Start still picks each trig's start without cutting the note that plays. Reverse keeps its end, where
+  it began, and moves its start.
+- *Looping*, the voice takes the window Start and Length now give, as the Model:Samples' render does:
+  it computes the window in every block (`0x400a62dc` from `0x400a6c38` in its render `0x400a6abc`),
+  sets the playhead only at a trig (`0x400a6c40`), and goes round when the playhead reaches the current
+  end (`0x400a6c8e`). The end comes at once, the start from the next seam on. A Start moved far on
+  lets the pass that plays run on to the new end before the loop settles there; an end moved behind
+  the playhead goes round at once.
 
 ## 12. Putting files on the +Drive over USB
 
@@ -630,7 +666,11 @@ From reading its MAIN OS; addresses here are the Model:Samples'.
 - **The window**: `0x400a62dc` (section 11), which also handles loop and reverse: with Flip it swaps
   start and end. In the render (`0x400a6abc`) a voice flag at `+100` reads as Loop and one at `+102`
   as the direction; past the end with Loop on, the position moves back by the window's length and
-  keeps its overshoot (`0x400a6c92`), with no fade at the seam. Read, not followed through.
+  keeps its overshoot (`0x400a6c92`), with no fade at the seam. Read, not followed through. The render
+  calls the window function for each voice in every block (`0x400a6c38`), not only at a trig, and
+  sets the playhead (absolute, in frames of the sample) from it only when the voice's trig bit is set
+  (`0x400a6c40`), so Start and Length act on a voice that plays; how a voice that does not loop ends
+  when its end moves behind the playhead was not followed through.
 - **Level.** The end of the render (`0x400a7266`) ramps each voice's level linearly within a block,
   as the Cycles' VCA does: normally to full; to 0 in the block of a new trig when a voice flag
   (`+40`) is set; to a quarter each block when another (`+41`) is set and a track value is 0. The
@@ -658,7 +698,7 @@ Control All Config); 0.6 was built against `6a9742a` and verified against `95b63
 `m68k-elf-gcc`, `m68k-elf-binutils`); for the upload page node.
 
 ```sh
-make test            # the core: every frame against a 64-bit reference, fades, reverse and loops included
+make test            # the core: every frame against a 64-bit reference, fades, reverse, loops and moving windows included
 make filter-test     # the filter: its table, response against its laws, starts, glide, fades, saturation
 make machine-test    # bridge, sample memory, view and the filter's place, with stand-ins for the OS,
                      # built with the switches (SMP_SWITCHES) and without

@@ -325,6 +325,7 @@ static void reset_all(void)
     memset(smp_slots, 0, sizeof smp_slots);
     memset(voices, 0, sizeof voices);
     memset(rates, 0, sizeof rates);
+    memset(knobs, 0, sizeof knobs);
     memset(live_id, 0, sizeof live_id);
     host_pool_size = sizeof host_pool;
     live_kit = 0;
@@ -606,6 +607,55 @@ static void test_start_length(void)
               (int)voices[1].active, (int)voices[1].start, (int)voices[1].end, (int)cases[i].from,
               (int)cases[i].to);
     }
+}
+
+/* Start and Length on the note that plays: once, it keeps the Start of its trig and plays what Length
+   now gives, so its end moves (shorter, longer, at most the sample's end; behind the playhead it ends
+   with its whole fade-out); Start alone leaves it alone; not in the blocks of a trig. */
+static void test_follow(void)
+{
+    int32_t out[SMP_BLOCK];
+    int b;
+
+    reset_all();
+    defaults();
+    add_file(42, 0x4461, 48000, 0, 48000, ramp);        /* 1 s: 1500 blocks */
+    make_sound(host_sound(1), 42, 0x4461);
+    tick_until(0x4461, SLOT_READY, 5);
+    target_names(1, 0x4461);
+    *v32(1, 0x230) = *v32(1, 0x234) = 0x40000000;       /* the amp envelope open */
+    set_param(0x16, 10 << 8);                           /* Start 10, Length 120: 4000 to the end */
+    block(1, 1, 60 << 16, out);
+    for (b = 0; b < 10; b++)
+        block(1, 0, 60 << 16, out);
+    CHECK(voices[1].start == 4000 && voices[1].end == 48000, "the trig: 4000 to 48000");
+    set_param(0x18, 30 << 8);
+    block(1, 0, 60 << 16, out);
+    CHECK(voices[1].start == 4000 && voices[1].end == 16000 && voices[1].stop == 12000,
+          "Length 30: the end at once, %d to %d", (int)voices[1].start, (int)voices[1].end);
+    set_param(0x16, 60 << 8);
+    block(1, 0, 60 << 16, out);
+    CHECK(voices[1].start == 4000 && voices[1].end == 16000, "Start alone: unchanged, %d to %d",
+          (int)voices[1].start, (int)voices[1].end);
+    set_param(0x18, 50 << 8);
+    block(1, 0, 60 << 16, out);
+    CHECK(voices[1].start == 4000 && voices[1].end == 24000, "Length 50 from the trig's Start: %d to %d",
+          (int)voices[1].start, (int)voices[1].end);
+    set_param(0x18, 120 << 8);
+    block(1, 0, 60 << 16, out);
+    CHECK(voices[1].end == 48000, "Length 120 from Start 10: to the sample's end, %d", (int)voices[1].end);
+    set_param(0x18, 40 << 8);
+    *v32(1, 0x34) = 1;                                  /* a trig in this block: no move */
+    *v32(1, 0x38) = 0;
+    sampler_update(60 << 16, voice(1), params);
+    CHECK(voices[1].end == 48000, "not in a trig's block: %d", (int)voices[1].end);
+    set_param(0x18, 0);                                 /* behind the playhead: its fade-out still whole */
+    block(1, 0, 60 << 16, out);                         /* (384 frames at 96 kHz, 192 here; a block played) */
+    CHECK(voices[1].active && voices[1].end - voices[1].start - voices[1].pos >= SMP_FADE / 2 - SMP_BLOCK,
+          "Length 0: %d frames left for the fade", (int)(voices[1].end - voices[1].start - voices[1].pos));
+    for (b = 0; b < 8 && voices[1].active; b++)
+        block(1, 0, 60 << 16, out);
+    CHECK(!voices[1].active && out[SMP_BLOCK - 1] == 0, "and it ends within 8 blocks");
 }
 
 static void test_play_kit(void)
@@ -1283,6 +1333,55 @@ static void test_switches(void)
     CHECK(!voices[1].loop && !voices[1].reverse, "and both off there");
 }
 
+/* Start and Length on a note that plays with the switches: reverse once keeps its end and moves its
+   start; a loop takes the window at once on its far side and from the next seam on its first side, or
+   goes round at once when its end lands behind the playhead. */
+static void test_follow_switches(void)
+{
+    _Alignas(4) char snd[100];
+    int32_t out[SMP_BLOCK];
+    int b;
+
+    reset_all();
+    defaults();
+    add_file(131, 0xd103, 48000, 0, 48000, ramp);
+    make_sound(host_sound(1), 131, 0xd103);
+    tick_until(0xd103, SLOT_READY, 5);
+    target_names(1, 0xd103);
+    memset(snd, 0, sizeof snd);
+    host_cur_snd[1] = snd;
+    *v32(1, 0x230) = *v32(1, 0x234) = 0x40000000;
+
+    set_k32(snd, SW_REVERSE);
+    block(1, 1, 60 << 16, out);
+    block(1, 0, 60 << 16, out);
+    set_param(0x18, 30 << 8);
+    block(1, 0, 60 << 16, out);
+    CHECK(voices[1].reverse && voices[1].end == 48000 && voices[1].start == 36000,
+          "reverse, Length 30: plays down to %d from %d", (int)voices[1].start, (int)voices[1].end);
+
+    set_k32(snd, SW_LOOP);
+    set_param(0x18, 10 << 8);                           /* a loop of 4000 frames from 0 */
+    block(1, 1, 60 << 16, out);
+    for (b = 0; b < 20; b++)
+        block(1, 0, 60 << 16, out);
+    CHECK(voices[1].stop == SMP_LOOPING && voices[1].start == 0 && voices[1].end == 4000, "the loop: 0 to 4000");
+    set_param(0x16, 60 << 8);
+    block(1, 0, 60 << 16, out);
+    CHECK(voices[1].start == 0 && voices[1].end == 28000 && voices[1].next == 24000,
+          "Start 60: this pass on to %d, the next from %d", (int)voices[1].end, (int)voices[1].next);
+    for (b = 0; b < 1000 && voices[1].next >= 0; b++)
+        block(1, 0, 60 << 16, out);
+    CHECK(voices[1].start == 24000 && voices[1].end == 28000 && voices[1].next < 0, "then 24000 to 28000");
+    for (b = 0; b < 100 && voices[1].pos < 1000; b++)
+        block(1, 0, 60 << 16, out);
+    set_param(0x18, 1 << 8);                            /* the end behind the playhead: round at once */
+    block(1, 0, 60 << 16, out);
+    CHECK(voices[1].start == 24000 && voices[1].end == 24400 && voices[1].pos < 400 && voices[1].looped,
+          "Length 1: round at once into 24000 to 24400, at %d", (int)voices[1].pos);
+    host_cur_snd[1] = 0;
+}
+
 /* L and R at the right end of the name's box, dark in it like the name, each in its own place. */
 static void test_view_switches(void)
 {
@@ -1685,6 +1784,7 @@ int main(void)
     test_drive_guard();
     test_rate_pitch();
     test_start_length();
+    test_follow();
     test_overview();
     test_view();
     test_view_held();
@@ -1701,6 +1801,7 @@ int main(void)
     test_cut_fade_in();
 #ifdef SMP_SWITCHES
     test_switches();
+    test_follow_switches();
     test_view_switches();
 #endif
     drop_files();
