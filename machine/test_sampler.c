@@ -45,6 +45,41 @@ const void *host_font;
 const char host_font_small[] = "small", host_font_medium[] = "medium";
 _Alignas(8) char host_ui_objects[76 * 100];
 static int fmt_int_calls;
+smp_picture host_pictures[76];
+const void *host_frames_cutoff[2], *host_frames_reso[2];
+
+/* The pictures' stand-ins: what was last called, and how often. */
+static struct {
+    int sweeps, contours, picks, draws;
+    const void *self, *b, *list, *sprite;
+    int32_t x, y, value, full, centred;
+} pic;
+static const char frame_sprite[28];             /* the frame host_pick_frame hands out */
+
+void host_pic_sweep(void *self, void *b, int32_t x, int32_t y, int32_t value)
+{
+    pic.sweeps++;
+    pic.self = self, pic.b = b, pic.x = x, pic.y = y, pic.value = value;
+}
+
+void host_pic_contour(void *self, void *b, int32_t x, int32_t y, int32_t value)
+{
+    pic.contours++;
+    pic.self = self, pic.b = b, pic.x = x, pic.y = y, pic.value = value;
+}
+
+const void *host_pick_frame(const void *list, int32_t value, int32_t full)
+{
+    pic.picks++;
+    pic.list = list, pic.value = value, pic.full = full;
+    return frame_sprite;
+}
+
+void host_draw_sprite(void *b, const void *sprite, int32_t x, int32_t y, int32_t centred)
+{
+    pic.draws++;
+    pic.b = b, pic.sprite = sprite, pic.x = x, pic.y = y, pic.centred = centred;
+}
 
 int32_t host_fmt_int(void *self, int32_t value, char *buf)
 {
@@ -350,6 +385,10 @@ static void reset_all(void)
     ntexts = 0;
     memset(host_ui_objects, 0, sizeof host_ui_objects);
     fmt_int_calls = 0;
+    memset(host_pictures, 0, sizeof host_pictures);
+    memset(&pic, 0, sizeof pic);
+    host_frames_cutoff[0] = host_frames_reso[0] = frame_sprite;   /* built, as at boot */
+    host_frames_cutoff[1] = host_frames_reso[1] = frame_sprite + 28;
 }
 
 static int tick_until(uint32_t id, int state, int limit)
@@ -1766,6 +1805,65 @@ static void test_cutoff_install(void)
     CHECK(UI_FORMATTER(53) == host_fmt_int, "installed only once");
 }
 
+/* Cutoff's and Reso's pictures: the Model:Samples' frames on a SAMPLE track, picked by the value
+   from the knob's own place; SNARE's anywhere else, and while the frames are not built. */
+static void test_pictures(void)
+{
+    char self[8], bmp[8];
+    int32_t value = 0x2b40;
+
+    reset_all();
+    host_track = 2;
+    make_sound(host_sound(2), 1, 0x11);
+    smp_pic_cutoff(self, bmp, 32, 19, value);
+    CHECK(pic.picks == 1 && pic.list == FRAMES_CUTOFF && pic.value == value && pic.full == 1, "Cutoff's frame: %d",
+          pic.picks);
+    CHECK(pic.draws == 1 && pic.b == bmp && pic.sprite == frame_sprite && pic.x == 32 && pic.y == 19 && pic.centred == 1,
+          "Cutoff's frame drawn: %d at %d, %d", pic.draws, (int)pic.x, (int)pic.y);
+    smp_pic_reso(self, bmp, 32, 19, 0x7f00);
+    CHECK(pic.picks == 2 && pic.list == FRAMES_RESO && pic.value == 0x7f00 && pic.draws == 2, "Reso's frame");
+    CHECK(pic.sweeps == 0 && pic.contours == 0, "SNARE's pictures on a SAMPLE track: %d, %d", pic.sweeps,
+          pic.contours);
+
+    host_sound(2)[38] = 1;                                /* the track plays SNARE now */
+    smp_pic_cutoff(self, bmp, 32, 19, value);
+    smp_pic_reso(self, bmp, 30, 18, 0x100);
+    CHECK(pic.sweeps == 1 && pic.contours == 1 && pic.picks == 2 && pic.draws == 2, "SNARE: %d, %d, %d", pic.sweeps,
+          pic.contours, pic.picks);
+    CHECK(pic.self == self && pic.b == bmp && pic.x == 30 && pic.y == 18 && pic.value == 0x100, "SNARE's arguments");
+    host_track = -1;                                      /* no track selected */
+    smp_pic_cutoff(self, bmp, 32, 19, value);
+    CHECK(pic.sweeps == 2 && pic.picks == 2, "no track");
+
+    host_track = 2;
+    host_sound(2)[38] = SAMPLE_MACHINE;
+    host_frames_cutoff[0] = host_frames_cutoff[1] = 0;    /* not built (yet) */
+    smp_pic_cutoff(self, bmp, 32, 19, value);
+    CHECK(pic.sweeps == 3 && pic.picks == 2, "frames not built");
+}
+
+/* The tick puts each picture into its shared object once it holds SNARE's, and leaves any other
+   alone; the formatter goes its own way. */
+static void test_pictures_install(void)
+{
+    smp_picture other = (smp_picture)host_pic_sweep + 1;
+
+    reset_all();
+    UI_PICTURE(53) = other;                               /* another mod's */
+    smp_ui_tick();                                        /* Reso's object not built yet: 0 */
+    CHECK(UI_PICTURE(53) == other && UI_PICTURE(54) == 0, "left alone");
+    UI_PICTURE(54) = PIC_CONTOUR;
+    smp_ui_tick();
+    CHECK(UI_PICTURE(53) == other && UI_PICTURE(54) == smp_pic_reso, "Reso's installed alone");
+    UI_PICTURE(53) = PIC_SWEEP;
+    smp_ui_tick();
+    CHECK(UI_PICTURE(53) == smp_pic_cutoff, "Cutoff's installed");
+    UI_PICTURE(53) = PIC_SWEEP;                           /* done once: later stock values stay */
+    UI_PICTURE(54) = PIC_CONTOUR;
+    smp_ui_tick();
+    CHECK(UI_PICTURE(53) == PIC_SWEEP && UI_PICTURE(54) == PIC_CONTOUR, "installed only once");
+}
+
 int main(void)
 {
     test_browser();
@@ -1798,6 +1896,8 @@ int main(void)
     test_filter_record();
     test_cutoff_text();
     test_cutoff_install();
+    test_pictures();
+    test_pictures_install();
     test_cut_fade_in();
 #ifdef SMP_SWITCHES
     test_switches();

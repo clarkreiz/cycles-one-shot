@@ -55,6 +55,11 @@ work as on the Model:Samples too, as two switches of model27's builds (below).
   that chain for all tracks. You hear the difference only with DIST above 0: the distortion
   then acts on the filtered signal. The laws, the structure and the measurements are in
   [TECHNICAL.md, section 16](TECHNICAL.md#16-the-filter).
+- **The Model:Samples' pictures for Cutoff and Reso.** While SWEEP or CONTOUR turns on a SAMPLE
+  track, the knob view shows the Model:Samples' own pictures of its filter instead of SNARE's: the
+  lowpass's edge moving up and turning into a highpass, and a peak growing at the edge. The Cycles'
+  OS carries them already, built at start-up though nothing in it draws them, so One-Shot adds no
+  graphics of its own.
 - **A waveform view.** On a SAMPLE track the main screen shows a narrow column on the left: the
   current pattern's number (A01 to F16), TRAK with the track's number, and the track's level as a
   bar that moves while you turn LEVEL. To its right the sample's name sits in a box like the OS's
@@ -84,6 +89,9 @@ work as on the Model:Samples too, as two switches of model27's builds (below).
 
 ## Status
 
+- **Machine 0.14** (on a SAMPLE track, Cutoff and Reso show the Model:Samples' pictures in the knob
+  view, taken from the Cycles' own OS): host-tested, and One-Shot's own image tested in the digiemu
+  emulator and on a Model:Cycles (2026-11-04). Not yet in a build of model27.
 - **Machine 0.13** (Start and Length act on the note that plays: once, Length moves its end; a loop
   takes its end at once and its start from the next time round): host-tested, and tested in a build
   of model27 with the switches, in the digiemu emulator and on a Model:Cycles (2026-11-02). One-Shot's
@@ -149,7 +157,7 @@ work as on the Model:Samples too, as two switches of model27's builds (below).
    python3 machine/build.py --stock model-cycles_OS1.13.syx --modded-cycles path/to/Modded-Cycles
    ```
 
-   This writes `build/model-cycles_OS1.13-sampler-v0.13.syx` and `build/sampler-tweak.json`, the
+   This writes `build/model-cycles_OS1.13-sampler-v0.14.syx` and `build/sampler-tweak.json`, the
    same machine as a tweak file Modded-Cycles' own `tools/build.py` accepts, and checks every change
    against the stock bytes.
 2. **Install it** over USB the way you install an official OS update. To go back, first set every

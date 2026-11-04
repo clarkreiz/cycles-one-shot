@@ -87,6 +87,20 @@ int32_t host_fmt_int(void *self, int32_t value, char *buf);
 #define UI_OBJECT(i)        (host_ui_objects + 100 * (i))
 #define UI_FORMATTER(i)     (*(smp_formatter *)(UI_OBJECT(i) + 0x20))
 #define FMT_INT             host_fmt_int
+typedef void (*smp_picture)(void *, void *, int32_t, int32_t, int32_t);
+extern smp_picture host_pictures[76];   /* the objects' +0x60, apart: a host pointer would not fit */
+extern const void *host_frames_cutoff[2], *host_frames_reso[2];
+void host_pic_sweep(void *self, void *b, int32_t x, int32_t y, int32_t value);
+void host_pic_contour(void *self, void *b, int32_t x, int32_t y, int32_t value);
+const void *host_pick_frame(const void *list, int32_t value, int32_t full);
+void host_draw_sprite(void *b, const void *sprite, int32_t x, int32_t y, int32_t centred);
+#define UI_PICTURE(i)       (host_pictures[i])
+#define PIC_SWEEP           host_pic_sweep
+#define PIC_CONTOUR         host_pic_contour
+#define FRAMES_CUTOFF       ((const void *)host_frames_cutoff)
+#define FRAMES_RESO         ((const void *)host_frames_reso)
+#define PICK_FRAME(l, v, f) host_pick_frame(l, v, f)
+#define DRAW_SPRITE(b, s, x, y, c) host_draw_sprite(b, s, x, y, c)
 #define FONT_SMALL          ((const void *)host_font_small)
 #define FONT_MEDIUM         ((const void *)host_font_medium)
 #define DRAW_TEXT           host_draw_text

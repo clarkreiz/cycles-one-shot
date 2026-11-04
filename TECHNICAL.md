@@ -78,15 +78,17 @@ calls that registrar from a clone of Modded-Cycles with SAMPLE as the one machin
 A parameter descriptor is `0x38` bytes: `+0x00` the machine it belongs to, `+0x08` minimum, `+0x0c`
 maximum, `+0x10` default (8.8 values), `+0x2c` long name, `+0x34` short name. The stock table has
 76 entries at `0x4010dce0`. SAMPLE adds five, modelled on SNARE's: 76 Start (0–120, default 0), 77
-Length (0–120, default 120), 78 and 79 unused, 80 Amp Decay (default 127). SAMPLE is machine 6 and
+Length (0–120, default 120), 78 Cutoff (0–127, default 64) and 79 Reso (0–127, default 0), both since
+0.5, 80 Amp Decay (default 127). SAMPLE is machine 6 and
 borrows picture 4 (TONE's) for the MACHINES page; the OS has only six pictures. In a combined build
 the registrar assigns the index and the descriptors from SAMPLE's place in the list; the build hands
 them to the compiler (`SAMPLE_MACHINE`, `DESC_START`), or, with `CM_SYMBOLS` defined, leaves them as the
 undefined symbols `cm_machine_index` and `cm_descriptor_base` that a Level B builder resolves when it places
 the compiled object (the object is then compiled once and composed many times; each assembly file has a
 section of its own so that such a builder keeps the file order), and the knobs' parameter objects are SNARE's
-for every added machine (the accessor detour of notes/18), which is why the Cutoff formatter asks
-whether the selected track plays SAMPLE before it writes anything (section 9).
+for every added machine (the accessor detour of notes/18), which is why the Cutoff formatter and the
+pictures of Cutoff and Reso ask whether the selected track plays SAMPLE before they draw anything
+(section 9).
 
 ## 4. What One-Shot changes in the OS
 
@@ -394,6 +396,23 @@ A value's text comes from the function at the object's `+0x20`, called as `forma
 least, and the screen shows three characters at most. The stock formatters: `0x400456c8` writes
 0 … 127 (`sprintf "%d"` of the value >> 8), `0x400456ea` −64 … +63 with a plus sign,
 `0x40045bd6` OFF in the middle and ±n. One-Shot puts its own into the shared object of Cutoff
+(section 16).
+
+A parameter's picture, in the knob view's light box, comes from the function at the object's
+`+0x60`: the knob view (`0x4001d818`, from its draw) calls the parameter's vtable entry +68
+(`0x4000a6b0`), which looks the object up again and, while `+0x5c` is set, calls
+`picture(object + 0x54, bitmap, 32, 19, value)` (`0x4001d85e`). The stock pictures pick a frame from a
+list of sprites by the value and draw it centred on (32, 19): `0x40072058(list, value, 1)` gives
+frame round(value · (n − 1) / (127 · 256)), clamped (it goes on to `0x40071ff4`, whose third argument
+is the value's top; with 0 the value is the frame's number), and `0x40071da4(bitmap, sprite, x, y, 1)` draws it, the
+last argument for centred. A list is a vector {first, end} of 28-byte sprites. All of them are built
+at boot by one constructor (`0x400ab7b8`, from the table at `0x4019b430`), and that constructor is
+the Model:Samples OS's own as well: the two OSes build the same 2047 sprites in the same order, pixel
+for pixel, each keeping lists that only the other's code reads. Among those the Cycles never draws are the
+Model:Samples' Cutoff (87 frames of 50 × 22 at `0x40fe3638`: the lowpass's edge moving up, then the
+highpass's) and Resonance (11 frames at `0x40fe35f4`: a peak growing at the edge). The Model:Samples
+draws them through the same two functions from the same place (32, 19), Start and Length with
+`0x40071ff4(list, value, 120 · 256)`. One-Shot shows Cutoff's and Reso's on a SAMPLE track
 (section 16).
 
 ### Bitmaps and drawing
@@ -820,6 +839,14 @@ pixels per OS pixel) and compare against the PBM pictures above.
   back to the folder above, 2026-10-26): host tests (`make uploader-test`: no Back at the root, Back
   in a folder, into a folder in a folder and back up one at a time, an empty folder says so), then
   in Chrome against a stand-in Cycles. Not yet with a Model:Cycles.
+- **Machine 0.14** (the Model:Samples' pictures for Cutoff and Reso, 2026-11-04): host tests
+  (`make machine-test` with and without the switches: the frames picked by the value and drawn at the
+  knob's place, SNARE's pictures on another machine's track, with no track and while a list is empty,
+  each slot installed once and only over SNARE's; four deliberate faults all caught; also under ASan
+  and UBSan), then One-Shot's own image, built against Modded-Cycles `95b63b7` with
+  elektron-firmware-tool's check, in digiemu and on a Model:Cycles (2026-11-04), the same image byte
+  for byte: SWEEP and CONTOUR show the Model:Samples' pictures on a SAMPLE track and SNARE's on a
+  SNARE track. Not yet in a build of model27.
 
 ## 16. The filter
 
@@ -899,6 +926,18 @@ object is SNARE's SWEEP's (SAMPLE's descriptors share SNARE's objects), so the f
 asks whether the selected track plays SAMPLE and otherwise writes the stock 0 … 127. The tick
 installs it once it finds the stock formatter in the slot; nothing else in the OS changes, and
 the parameter itself stays 0 … 127 with 64 in the middle for the LFO, locks, NRPN and saving.
+
+**Cutoff's and Reso's pictures** (0.14). While SWEEP or CONTOUR turns, the knob view shows the
+parameter's picture from its object (section 9), and SAMPLE's Cutoff and Reso share SNARE's SWEEP
+and CONTOUR objects, so they showed SNARE's pictures (`0x400466a2`, `0x400466f0`). `smp_pic_cutoff`
+and `smp_pic_reso` go into those objects' picture slots: on a SAMPLE track they pick and draw the
+Model:Samples' own frames (`0x40fe3638`, `0x40fe35f4`) the way SNARE's pictures pick theirs, with
+`0x40072058(list, value, 1)`, so 64 shows the open frame in the middle of the 87 as on the
+Model:Samples; on any other track, or while a list is still empty, they call SNARE's. The tick
+installs each one once it finds SNARE's in its slot and leaves anything else alone, as with the
+formatter; only the OS's boot code writes these slots (`0x400e0414`, `0x400e04a2`). The frames are
+the OS's own, built at boot, so One-Shot carries no graphics for them. `make machine-test` checks
+the picking, the fallback to SNARE's and the installation.
 
 **Differences from the Model:Samples, on purpose.** The highpass passes at unity, not 12 dB down.
 On the highpass side the Model:Samples' idle lowpass stage (−0.8 dB at 10 kHz, −1.9 dB at
