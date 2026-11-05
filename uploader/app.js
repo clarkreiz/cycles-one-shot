@@ -6,7 +6,7 @@
     var POOL = 63 * 1024 * 1024;    /* SAMPLE's sample memory: a bigger file would never load */
     var state = {
         access: null, input: null, output: null, seq: 1, pending: null, rx: null,
-        path: "/", items: [], files: [], busy: false, connected: false
+        path: "/", items: [], files: [], folders: [], busy: false, connected: false
     };
 
     function $(id) { return document.getElementById(id); }
@@ -214,11 +214,97 @@
 
     /* ---- files --------------------------------------------------------------------------- */
 
-    function addFiles(list) {
+    /* dir: the folder the file sits in, relative to the folder the upload goes to ("" for none),
+       its names cleaned for the drive. */
+    function relDir(parts) {
+        return parts.map(E.cleanFolderName).filter(Boolean).join("/");
+    }
+
+    function addFiles(list, dir) {
         Array.from(list).forEach(function (f) {
-            state.files.push({ file: f, name: E.cleanName(f.name), state: "", done: false });
+            state.files.push({ file: f, name: E.cleanName(f.name), dir: dir || "", state: "", done: false });
         });
         render();
+    }
+
+    function addFolder(dir) {
+        if (dir && state.folders.indexOf(dir) < 0)
+            state.folders.push(dir);
+    }
+
+    /* Files from a folder: from the folder chooser each carries its path below the chosen folder's
+       parent ("Kit/Hats/Hat 1.wav"). What is no audio stays out, hidden files too. */
+    function addTree(list, folders) {
+        var skipped = 0, added = 0;
+
+        (folders || []).forEach(addFolder);
+        list.forEach(function (it) {
+            var parts = String(it.path).split("/").filter(Boolean), name = parts.pop() || "";
+
+            if (parts.some(function (p) { return p.charAt(0) === "."; }) || !E.isAudioName(name)) {
+                if (name.charAt(0) !== ".")
+                    skipped++;
+                return;
+            }
+            addFolder(relDir(parts));
+            addFiles([it.file], relDir(parts));
+            added++;
+        });
+        show(added + " file" + (added === 1 ? "" : "s") + " added from the folder" +
+             (skipped ? "; " + skipped + " left out: not audio." : "."), skipped ? "warn" : "");
+        render();
+    }
+
+    function fromChooser(files) {
+        addTree(Array.from(files).map(function (f) {
+            return { file: f, path: f.webkitRelativePath || f.name };
+        }));
+    }
+
+    /* A drop: its entries are walked, folders with all they hold, empty ones too. */
+    function readAll(reader) {
+        return new Promise(function (resolve, reject) {
+            var all = [];
+
+            (function more() {
+                reader.readEntries(function (batch) {
+                    if (!batch.length)
+                        return resolve(all);
+                    all = all.concat(Array.from(batch));
+                    more();
+                }, reject);
+            })();
+        });
+    }
+
+    async function walk(entry, out, folders) {
+        var path = entry.fullPath.replace(/^\/+/, ""), kids, i;
+
+        if (entry.isFile) {
+            out.push({ path: path, file: await new Promise(function (ok, bad) { entry.file(ok, bad); }) });
+            return;
+        }
+        if (entry.name.charAt(0) === ".")
+            return;
+        folders.push(relDir(path.split("/")));
+        kids = await readAll(entry.createReader());
+        for (i = 0; i < kids.length; i++)
+            await walk(kids[i], out, folders);
+    }
+
+    async function drop(dt) {
+        var entries = Array.from(dt.items || []).map(function (it) {
+            return it.webkitGetAsEntry ? it.webkitGetAsEntry() : null;
+        }).filter(Boolean), out = [], folders = [], i;
+
+        if (!entries.some(function (e) { return e.isDirectory; })) {
+            addFiles(dt.files);
+            return;
+        }
+        show("Reading the folder…");
+        for (i = 0; i < entries.length; i++)
+            await walk(entries[i], out, folders);
+        addTree(out, folders);
     }
 
     /* Decoded by the browser at the Cycles' rate, its channels averaged: the 16-bit frames. */
@@ -245,12 +331,50 @@
         renderFiles();
     }
 
-    async function upload(entry) {
-        var path = E.joinPath(state.path, entry.name), items, frames, data, m, id, off, chunk, found, warn = "";
+    /* The folders of the upload made below base, each after the one it is in; one already there is
+       used as it is. */
+    async function makeTree(base, rels) {
+        var all = [], seen = {}, made = 0, i;
+
+        rels.forEach(function (rel) {
+            var parts = rel.split("/"), k;
+
+            for (k = 1; k <= parts.length; k++) {
+                var r = parts.slice(0, k).join("/");
+
+                if (r && !seen[r]) {
+                    seen[r] = true;
+                    all.push(r);
+                }
+            }
+        });
+        all.sort(function (a, b) { return a.split("/").length - b.split("/").length || a.localeCompare(b); });
+        for (i = 0; i < all.length; i++) {
+            var path = E.joinPath(base, all[i]), name = path.slice(path.lastIndexOf("/") + 1), items, there, m;
+
+            items = await readDir(E.parentPath(path));
+            there = items.filter(function (x) { return x.name === name; })[0];
+            if (there) {
+                if (!there.folder)
+                    throw new Error("a file named " + name + " is where the folder " + path + " goes");
+                continue;
+            }
+            show("Making the folder " + path + "…");
+            m = await send(E.TYPE.CREATE_DIR, E.pathBytes(path), 5000);
+            if (!E.replyOk(m))
+                throw new Error("the Cycles did not make the folder " + path + (E.replyText(m) ? ": " + E.replyText(m) : ""));
+            made++;
+        }
+        return made;
+    }
+
+    async function upload(entry, base) {
+        var dir = E.joinPath(base, entry.dir || ""), path = E.joinPath(dir, entry.name), items, frames, data, m, id, off,
+            chunk, found, warn = "";
 
         if (!entry.name)
             throw new Error("give it a name");
-        items = await listDir(state.path);
+        items = await readDir(dir);
         if (items.some(function (x) { return x.name === entry.name; }))
             throw new Error("something named " + entry.name + " is already in this folder");
         progress(entry, "converting");
@@ -262,7 +386,7 @@
         data = E.sampleFile(frames, E.RATE);
         /* CHORD Tables plays this folder: a file it cannot play is not written; a table whose first frame is no
            sine is written with a warning, since SWEEP 0 then plays no sine */
-        if (state.path === E.WAVETABLES) {
+        if (dir === E.WAVETABLES) {
             if (!E.tableFrames(frames))
                 throw unplayable(frames.length);
             if (!E.startsWithSine(frames))
@@ -286,7 +410,7 @@
         m = await send(E.TYPE.CLOSE_WRITE, E.u32(id).concat(E.u32(data.length)), 60000);
         if (!E.replyOk(m))
             throw new Error(E.replyText(m) || "the Cycles did not finish the file");
-        items = await listDir(state.path);
+        items = await readDir(dir);
         found = items.filter(function (x) { return !x.folder && x.name === entry.name; })[0];
         if (!found)
             throw new Error("the file is not in the folder afterwards");
@@ -298,12 +422,17 @@
     }
 
     async function uploadAll() {
-        var todo = state.files.filter(function (f) { return !f.done; }), ok = 0, warned = 0, refused = 0, i;
+        var todo = state.files.filter(function (f) { return !f.done; }), base = state.path, ok = 0, warned = 0,
+            refused = 0, made, i;
 
+        show("Uploading to " + base + "…");
+        made = await makeTree(base, state.folders.concat(todo.map(function (f) { return f.dir; })).filter(Boolean));
+        state.folders = [];
         for (i = 0; i < todo.length; i++) {
             try {
-                show("Uploading " + todo[i].name + " (" + (i + 1) + " of " + todo.length + ")…");
-                await upload(todo[i]);
+                show("Uploading " + E.joinPath(todo[i].dir || "/", todo[i].name).slice(1) +
+                     " (" + (i + 1) + " of " + todo.length + ")…");
+                await upload(todo[i], base);
                 ok++;
                 if (todo[i].warn)
                     warned++;
@@ -313,7 +442,9 @@
                 progress(todo[i], "failed: " + e.message);
             }
         }
-        show(ok + " of " + todo.length + " uploaded to " + state.path + "." +
+        await listDir(base).catch(function () {});
+        show(ok + " of " + todo.length + " uploaded to " + base + "." +
+             (made ? " " + made + " folder" + (made === 1 ? "" : "s") + " made." : "") +
              (refused ? " " + refused + " not uploaded: CHORD Tables cannot play it." : "") +
              (warned ? " " + warned + " with a warning: see the list." : ""),
              ok !== todo.length ? "bad" : warned ? "warn" : "ok");
@@ -386,7 +517,8 @@
         list.innerHTML = "";
         state.files.forEach(function (f, i) {
             var li = document.createElement("li"), input = document.createElement("input"),
-                st = document.createElement("span"), rm = document.createElement("button");
+                st = document.createElement("span"), rm = document.createElement("button"),
+                name = document.createElement("span"), dir = document.createElement("span");
 
             input.value = f.name;
             input.maxLength = E.NAME_MAX;
@@ -398,14 +530,27 @@
             rm.textContent = "×";
             rm.title = "Remove from the list";
             rm.disabled = state.busy;
-            rm.onclick = function () { state.files.splice(i, 1); render(); };
-            li.appendChild(input);
+            rm.onclick = function () {
+                state.files.splice(i, 1);
+                if (!state.files.length)
+                    state.folders = [];
+                render();
+            };
+            name.className = "name";
+            if (f.dir) {
+                dir.className = "dir";
+                dir.textContent = f.dir + "/";
+                dir.title = f.dir;
+                name.appendChild(dir);
+            }
+            name.appendChild(input);
+            li.appendChild(name);
             li.appendChild(st);
             li.appendChild(rm);
             list.appendChild(li);
         });
         if (!state.files.length)
-            list.innerHTML = '<li class="empty">Add audio files: WAV, AIFF, MP3, FLAC… (drop them here)</li>';
+            list.innerHTML = '<li class="empty">Add audio files or a folder: WAV, AIFF, MP3, FLAC… (drop them here)</li>';
     }
 
     function render() {
@@ -416,8 +561,8 @@
         $("back").disabled = !ready || state.path === "/";
         $("mkdir").disabled = !ready;
         $("refresh").disabled = !ready;
-        $("pick").disabled = state.busy;
-        $("upload").disabled = !ready || !state.files.some(function (f) { return !f.done; });
+        $("pick").disabled = $("pickFolder").disabled = state.busy;
+        $("upload").disabled = !ready || (!state.folders.length && !state.files.some(function (f) { return !f.done; }));
         renderFolder();
         renderFiles();
     }
@@ -429,12 +574,15 @@
     $("refresh").onclick = guarded(function () { return listDir(state.path); });
     $("pick").onclick = function () { $("chooser").click(); };
     $("chooser").onchange = function () { addFiles($("chooser").files); $("chooser").value = ""; };
+    $("pickFolder").onclick = function () { $("folderChooser").click(); };
+    $("folderChooser").onchange = function () { fromChooser($("folderChooser").files); $("folderChooser").value = ""; };
     $("upload").onclick = guarded(uploadAll);
     document.addEventListener("dragover", function (e) { e.preventDefault(); });
+    /* the entries are only there while the drop event runs, so drop() takes them before it waits */
     document.addEventListener("drop", function (e) {
         e.preventDefault();
-        if (!state.busy && e.dataTransfer && e.dataTransfer.files.length)
-            addFiles(e.dataTransfer.files);
+        if (!state.busy && e.dataTransfer)
+            guarded(drop)(e.dataTransfer);
     });
     render();
 })();

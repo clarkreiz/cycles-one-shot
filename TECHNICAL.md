@@ -847,6 +847,12 @@ pixels per OS pixel) and compare against the PBM pictures above.
   elektron-firmware-tool's check, in digiemu and on a Model:Cycles (2026-11-04), the same image byte
   for byte: SWEEP and CONTOUR show the Model:Samples' pictures on a SAMPLE track and SNARE's on a
   SNARE track. Not yet in a build of model27.
+- **Upload page 0.4** (a whole folder, 2026-11-05): host tests (`make uploader-test`: a folder from
+  the folder chooser and one dropped on the page are made in the open folder with their subfolders,
+  an empty one too when dropped, a dot in a folder's name kept; each file goes into its subfolder;
+  what is no audio and hidden files stay out; a folder already there is used as it is; a folder
+  named `Wavetables` uploaded from the root gets the CHORD Tables check; five deliberate faults all
+  caught). Not yet with a Model:Cycles.
 
 ## 16. The filter
 

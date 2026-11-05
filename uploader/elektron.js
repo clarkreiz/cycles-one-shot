@@ -198,6 +198,20 @@
         return Array.from(s).slice(0, NAME_MAX).join("");
     }
 
+    /* A folder's name for the drive: as cleanName, but its dots stay ("Kit v1.2" is no file). */
+    function cleanFolderName(s) {
+        s = String(s || "").replace(/[\/\\\u0000-\u001f\u007f]/g, "_").trim();
+        return Array.from(s).slice(0, NAME_MAX).join("");
+    }
+
+    /* What a folder from the computer holds that the page puts on the drive: audio files by their
+       extension, nothing hidden (.DS_Store, ._ files). */
+    var AUDIO = /\.(wav|wave|aif|aiff|aifc|mp3|flac|ogg|oga|opus|m4a|aac|caf)$/i;
+
+    function isAudioName(name) {
+        return AUDIO.test(name) && name.charAt(0) !== ".";
+    }
+
     /* Channels to one by averaging. */
     function mixDown(channels) {
         var n = channels[0].length, out = new Float32Array(n), c, i;
@@ -298,6 +312,8 @@
     exports.joinPath = joinPath;
     exports.parentPath = parentPath;
     exports.cleanName = cleanName;
+    exports.cleanFolderName = cleanFolderName;
+    exports.isAudioName = isAudioName;
     exports.mixDown = mixDown;
     exports.toInt16 = toInt16;
     exports.sampleFile = sampleFile;

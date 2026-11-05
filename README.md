@@ -70,8 +70,10 @@ work as on the Model:Samples too, as two switches of model27's builds (below).
   on the left.
 - **An upload page**, online at <https://durchgemacht.github.io/cycles-one-shot/uploader/> (the
   same files as `uploader/`). It puts audio files on the +Drive over USB from Chrome or Edge, as
-  samples SAMPLE plays, and deletes samples and folders from it (the × on a row, after asking; a
-  folder goes with everything in it). It needs no firmware change, so it works with the official OS as well. In the
+  samples SAMPLE plays, also a whole folder (Add folder…, or drop it on the page): the folder is made
+  in the one open on the +Drive with its subfolders as on the computer, and its audio files go into
+  them. It deletes samples and folders from it (the × on a row, after asking; a folder goes with
+  everything in it). It needs no firmware change, so it works with the official OS as well. In the
   folder `/Wavetables`, which model27's CHORD Tables plays as wavetables, it does not write a file
   CHORD Tables cannot play (not 1 to 32 frames of 256 samples, as a 48 kHz WAV), and it warns about a
   file whose first frame is not a sine: on such a table SWEEP 0 plays no sine.
@@ -130,6 +132,8 @@ work as on the Model:Samples too, as two switches of model27's builds (below).
   and in the digiemu emulator. A sound saved by 0.4 or earlier loads with the filter off.
 - **Machine 0.4** (waveform view, Start and Length as on the Model:Samples, fades): tested on a
   Model:Cycles (2026-10-17), and in the digiemu emulator.
+- **Upload page 0.4** (a whole folder, made on the +Drive as on the computer): host tests against a
+  stand-in Cycles; not yet with a Model:Cycles.
 - **Upload page 0.3** (a Back button to the folder above, instead of the small `..` row): host
   tests, and in a browser against a stand-in Cycles; not yet with a Model:Cycles.
 - **Upload page 0.2** (deleting files and folders): host tests against a stand-in Cycles, and

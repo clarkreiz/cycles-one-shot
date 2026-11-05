@@ -27,7 +27,7 @@ function element(id) {
     };
     return el;
 }
-const ids = ["status", "in", "out", "connect", "back", "mkdir", "refresh", "pick", "chooser", "upload", "path", "folder", "files"];
+const ids = ["status", "in", "out", "connect", "back", "mkdir", "refresh", "pick", "chooser", "pickFolder", "folderChooser", "upload", "path", "folder", "files"];
 const elements = {};
 ids.forEach(id => { elements[id] = element(id); });
 
@@ -145,15 +145,16 @@ class OfflineAudioContext {
                  getChannelData: (c) => (c === 0 ? tone : new Float32Array(tone.length)) };
     }
 }
-function file(name, firstByte) {
-    return { name, size: 1000, type: "audio/wav", arrayBuffer: async () => Uint8Array.from([firstByte, 1, 2]).buffer };
+function file(name, firstByte, rel) {
+    return { name, webkitRelativePath: rel || "", size: 1000, type: "audio/wav", arrayBuffer: async () => Uint8Array.from([firstByte, 1, 2]).buffer };
 }
+const listeners = {};
 const sandbox = {
     window: null,
     document: {
         getElementById: (id) => elements[id],
         createElement: () => element(""),
-        addEventListener: () => {}
+        addEventListener: (type, fn) => { listeners[type] = fn; }
     },
     navigator: { requestMIDIAccess: async () => access },
     OfflineAudioContext, setTimeout, clearTimeout, console, Uint8Array, Int16Array, Float32Array, DataView,
@@ -361,6 +362,65 @@ const state_files = () => elements.files.children.filter(li => li.children.lengt
     await until(() => elements.path.textContent === "/", "Back again goes to the root");
     check(elements.back.disabled, "where Back is off");
     check(!!row("A") && !!row("Kit") && !!row("factory"), "the root is listed again");
+
+    /* a folder from the computer: made in the current folder with its subfolders, the files in them */
+    const clearFiles = () => { while (state_files() > 0) elements.files.children[0].children[2].onclick(); };
+    clearFiles();
+    row("A").onclick();
+    await until(() => elements.path.textContent === "/A", "into A for the folder upload");
+    elements.folderChooser.files = [file("Kick.wav", 0x52, "Drums/Kick.wav"),
+                                    file("Hat 1.wav", 0x52, "Drums/Hats/Hat 1.wav"),
+                                    file("readme.txt", 0x00, "Drums/readme.txt"),
+                                    file(".DS_Store", 0x00, "Drums/Hats/.DS_Store"),
+                                    file("Kit v1.2.wav", 0x52, "Drums/Kit v1.2/Kit v1.2.wav")];
+    elements.folderChooser.onchange();
+    check(state_files() === 3, "three audio files listed, the rest left out: " + state_files());
+    check(/3 files added from the folder; 1 left out: not audio\./.test(elements.status.textContent),
+          "it says what it left out: " + elements.status.textContent);
+    check(elements.files.children[1].children[0].children[0].textContent === "Drums/Hats/",
+          "a row shows the folder it goes into");
+    elements.upload.onclick();
+    await until(() => /of 3 uploaded/.test(elements.status.textContent), "the folder upload ends");
+    check(/^3 of 3 uploaded to \/A\. 3 folders made\./.test(elements.status.textContent), "all three, three folders: " + elements.status.textContent);
+    check(drive.get("/A/Drums").folder && drive.get("/A/Drums/Hats").folder && drive.get("/A/Drums/Kit v1.2").folder,
+          "the folders are made, a dot in a name kept");
+    check(drive.has("/A/Drums/Kick") && drive.has("/A/Drums/Hats/Hat 1") && drive.has("/A/Drums/Kit v1.2/Kit v1.2"),
+          "each file is in its folder: " + under("/A/Drums"));
+    check(!drive.has("/A/Kick") && elements.path.textContent === "/A" && !!row("Drums"), "nothing loose; the page stays in A and lists Drums");
+
+    /* dropped: a folder with an empty folder in it, into one partly there already */
+    function fileEntry(fullPath, firstByte) {
+        const name = fullPath.slice(fullPath.lastIndexOf("/") + 1);
+        return { isFile: true, isDirectory: false, name, fullPath, file: (ok) => ok(file(name, firstByte)) };
+    }
+    function dirEntry(fullPath, kids) {
+        let given = false;
+        return { isFile: false, isDirectory: true, name: fullPath.slice(fullPath.lastIndexOf("/") + 1), fullPath,
+                 createReader: () => ({ readEntries: (ok) => { const k = given ? [] : kids; given = true; setTimeout(() => ok(k), 0); } }) };
+    }
+    clearFiles();
+    const tree = dirEntry("/Drums", [fileEntry("/Drums/Snare.wav", 0x52), dirEntry("/Drums/Empty", []),
+                                     dirEntry("/Drums/Hats", [fileEntry("/Drums/Hats/Hat 2.wav", 0x52)])]);
+    listeners.drop({ preventDefault() {}, dataTransfer: { files: [], items: [{ webkitGetAsEntry: () => tree }] } });
+    await until(() => state_files() === 2, "the dropped folder's two files are listed");
+    elements.upload.onclick();
+    await until(() => /of 2 uploaded/.test(elements.status.textContent), "the dropped upload ends");
+    check(/^2 of 2 uploaded to \/A\. 1 folder made\./.test(elements.status.textContent), "only the empty folder is new: " + elements.status.textContent);
+    check(drive.has("/A/Drums/Snare") && drive.has("/A/Drums/Hats/Hat 2") && drive.get("/A/Drums/Empty").folder,
+          "the files went in, the empty folder is made: " + under("/A/Drums"));
+    check(drive.has("/A/Drums/Kick"), "what was there stays");
+
+    /* a folder named Wavetables, uploaded from the root: its files are checked as tables there */
+    clearFiles();
+    elements.back.onclick();
+    await until(() => elements.path.textContent === "/", "back at the root for the folder of tables");
+    elements.folderChooser.files = [file("05.wav", 0x52, "Wavetables/05.wav"), file("06.wav", 0x57, "Wavetables/06.wav")];
+    elements.folderChooser.onchange();
+    elements.upload.onclick();
+    await until(() => /of 2 uploaded/.test(elements.status.textContent), "the folder of tables ends");
+    check(!drive.has("/Wavetables/05") && drive.has("/Wavetables/06"),
+          "05, no table, is not written into /Wavetables; 06 is: " + under("/Wavetables"));
+    check(/1 not uploaded: CHORD Tables cannot play it/.test(elements.status.textContent), "and it is said: " + elements.status.textContent);
 
     if (failures) {
         console.log(failures + " check(s) failed");

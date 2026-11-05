@@ -54,6 +54,9 @@
   button.del:hover:enabled { color: var(--bad); border-color: var(--bad); }
   button.del.kept { visibility: hidden; }
   li input { flex: 1; }
+  li .name { flex: 1; display: flex; gap: 6px; align-items: center; min-width: 0; }
+  li .dir { color: var(--muted); font-family: ui-monospace, Menlo, monospace; font-size: 13px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
   .info { color: var(--muted); font-size: 13px; white-space: nowrap; }
   .bad { color: var(--bad); }
   .ok { color: var(--ok); }
@@ -97,12 +100,15 @@
     <div class="row">
       <button id="pick">Add files…</button>
       <input id="chooser" type="file" accept="audio/*,.wav,.aif,.aiff,.mp3,.flac,.ogg,.m4a" multiple hidden>
+      <button id="pickFolder">Add folder…</button>
+      <input id="folderChooser" type="file" webkitdirectory multiple hidden>
       <span style="flex: 1"></span>
       <button id="upload" class="primary">Upload to this folder</button>
     </div>
     <ul id="files"></ul>
-    <p class="note">Each file becomes a 48 kHz mono sample named as listed. The Cycles stays silent
-      while it writes.</p>
+    <p class="note">Each file becomes a 48 kHz mono sample named as listed. A folder you add or drop
+      is made in this folder on the Cycles with its subfolders, as on the computer, and its audio files
+      go into them. The Cycles stays silent while it writes.</p>
   </section>
 
   <p id="status" aria-live="polite"></p>
